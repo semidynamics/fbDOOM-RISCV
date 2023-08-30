@@ -5,7 +5,8 @@
 # $Log:$
 #
 
-CROSS_COMPILE ?= #arm-linux-gnueabihf-
+CROSS_COMPILE=riscv64-unknown-linux-gnu-
+NOSDL=1
 
 ifeq ($(V),1)
 	VB=''
@@ -20,7 +21,7 @@ OBJS+=$(OBJDIR)/i_video_fbdev.o
 OBJS+=$(OBJDIR)/i_input_tty.o
 
 CC=$(CROSS_COMPILE)gcc  # gcc or g++
-CFLAGS+=-ggdb3 -Os
+CFLAGS+=-ggdb3 -O3 -march=rv64gcv
 LDFLAGS+=-Wl,--gc-sections
 CFLAGS+=-ggdb3 -Wall -DNORMALUNIX -DLINUX -DSNDSERV # -DUSEASM
 LIBS+=-lm -lc
