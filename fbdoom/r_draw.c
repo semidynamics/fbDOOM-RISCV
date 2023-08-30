@@ -683,20 +683,53 @@ void R_DrawSpan (void)
     // We do not check for zero spans here?
     count = ds_x2 - ds_x1;
 
+#if USE_VECTOR
+    count++;
     do
     {
-	// Calculate current texture index in u,v.
+        size_t vl = __riscv_vsetvl_e32m1(count);
+
+        vuint32m1_t position_base =  __riscv_vmv_v_x_u32m1(position, vl);
+
+        vuint32m1_t indexes =  __riscv_vid_v_u32m1(vl);
+
+        vuint32m1_t offsets = __riscv_vmul_vx_u32m1(indexes, step, vl);
+
+        vuint32m1_t position_v = __riscv_vadd_vv_u32m1(offsets, position_base, vl);
+
+        vuint32m1_t ytemp = __riscv_vsrl_vx_u32m1(position_v, 4, vl);
+        ytemp = __riscv_vand_vx_u32m1(ytemp, 0x0fc0, vl);
+
+        vuint32m1_t xtemp = __riscv_vsrl_vx_u32m1(position_v, 26, vl);
+
+        vuint32m1_t spot = __riscv_vor_vv_u32m1(xtemp, ytemp, vl);
+
+        vuint8mf4_t source = __riscv_vluxei32_v_u8mf4(ds_source, spot, vl);
+
+        vuint8mf4_t colormap = __riscv_vluxei8_v_u8mf4(ds_colormap, source, vl);
+
+        __riscv_vse8_v_u8mf4(dest, colormap, vl);
+
+        position += step * vl;
+        count -= vl;
+        dest += vl;
+    } while (count);
+#else
+    do
+    {
+    // Calculate current texture index in u,v.
         ytemp = (position >> 4) & 0x0fc0;
         xtemp = (position >> 26);
         spot = xtemp | ytemp;
 
-	// Lookup pixel from flat texture tile,
-	//  re-index using light/colormap.
-	*dest++ = ds_colormap[ds_source[spot]];
+        // Lookup pixel from flat texture tile,
+        //  re-index using light/colormap.
+        *dest++ = ds_colormap[ds_source[spot]];
 
         position += step;
 
     } while (count--);
+#endif
 }
 
 
