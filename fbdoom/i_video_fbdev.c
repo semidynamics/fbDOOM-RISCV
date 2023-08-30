@@ -47,6 +47,7 @@ rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 #include <sys/socket.h>
 #include <linux/fb.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 
 //#define CMAP256
 
@@ -198,7 +199,10 @@ void I_InitGraphics (void)
 
     /* Allocate screen to draw to */
 	I_VideoBuffer = (byte*)Z_Malloc (SCREENWIDTH * SCREENHEIGHT, PU_STATIC, NULL);  // For DOOM to draw on
-	I_VideoBuffer_FB = (byte*)malloc(fb.xres * fb.yres * (fb.bits_per_pixel/8));     // For a single write() syscall to fbdev
+	// I_VideoBuffer_FB = (byte*)malloc(fb.xres * fb.yres * (fb.bits_per_pixel/8));     // For a single write() syscall to fbdev
+
+    // SMD: use mmap to avoid extra copies between internal buffer and framebuffer
+    I_VideoBuffer_FB = mmap(NULL, fb.xres * fb.yres * (fb.bits_per_pixel/8), PROT_WRITE, MAP_SHARED, fd_fb, 0);
 
 	screenvisible = true;
 
