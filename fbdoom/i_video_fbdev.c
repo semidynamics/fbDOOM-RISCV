@@ -22,8 +22,8 @@
 //
 //-----------------------------------------------------------------------------
 
-static const char
-rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
+// static const char
+// rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 
 #include "config.h"
 #include "v_video.h"
@@ -49,12 +49,17 @@ rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
+#ifdef USE_VECTOR
+    #include "riscv_vector.h"
+#endif
+
 //#define CMAP256
 
 struct fb_var_screeninfo fb = {};
 int fb_scaling = 1;
 int usemouse = 0;
 
+#ifndef USE_VECTOR
 struct color {
     uint32_t b:8;
     uint32_t g:8;
@@ -63,6 +68,12 @@ struct color {
 };
 
 static struct color colors[256];
+#endif
+
+// Vector palette
+#ifdef USE_VECTOR
+static uint16_t vpalette[256];
+#endif
 
 // The screen buffer; this is modified to draw things to the screen
 
@@ -107,6 +118,7 @@ typedef struct
 	byte b;
 } col_t;
 
+#ifndef USE_VECTOR
 // Palette converted to RGB565
 
 static uint16_t rgb565_palette[256];
@@ -158,11 +170,51 @@ void cmap_to_fb(uint8_t * out, uint8_t * in, int in_pixels)
         in++;
     }
 }
+#else
+void draw_screen_vector(unsigned char *in, unsigned char *out)
+{
+    int y;
+    int x_offset, x_offset_end;
+
+    y = SCREENHEIGHT;
+    x_offset     = (((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8)) / 2;
+    x_offset_end = ((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8) - x_offset;
+
+    // Load the palette into the vector register
+    vuint16m8_t palette =  __riscv_vle16_v_u16m8(vpalette, 256);
+
+    while (y--)
+    {
+        out += x_offset;
+
+        int elements_to_process = SCREENWIDTH;
+
+        while (elements_to_process)
+        {
+            size_t vl = __riscv_vsetvl_e8m4(elements_to_process);
+
+            vuint8m4_t pixel_index_8 =  __riscv_vle8_v_u8m4(in, vl);
+
+            vuint16m8_t pixel_index_16 = __riscv_vzext_vf2_u16m8(pixel_index_8, vl);
+
+            // Gather the pixel data from the palette
+            vuint16m8_t pixel =  __riscv_vrgather_vv_u16m8(palette, pixel_index_16, vl);
+
+            // Store the pixels into the out buffer
+            __riscv_vse16_v_u16m8((uint16_t*) out, pixel, vl);
+
+            in += vl;
+            out += sizeof(uint16_t) * vl;
+            elements_to_process -= vl;
+
+        }
+        out += x_offset_end;
+    }
+}
+#endif
 
 void I_InitGraphics (void)
 {
-    int i;
-
     /* Open fbdev file descriptor */
     fd_fb = open("/dev/fb0", O_RDWR);
     if (fd_fb < 0)
@@ -183,8 +235,8 @@ void I_InitGraphics (void)
 
     printf("I_InitGraphics: DOOM screen size: w x h: %d x %d\n", SCREENWIDTH, SCREENHEIGHT);
 
-
-    i = M_CheckParmWithArgs("-scaling", 1);
+#ifndef USE_VECTOR
+    int i = M_CheckParmWithArgs("-scaling", 1);
     if (i > 0) {
         i = atoi(myargv[i + 1]);
         fb_scaling = i;
@@ -195,8 +247,7 @@ void I_InitGraphics (void)
             fb_scaling = fb.yres / SCREENHEIGHT;
         printf("I_InitGraphics: Auto-scaling factor: %d\n", fb_scaling);
     }
-
-
+#endif
     /* Allocate screen to draw to */
 	I_VideoBuffer = (byte*)Z_Malloc (SCREENWIDTH * SCREENHEIGHT, PU_STATIC, NULL);  // For DOOM to draw on
 	// I_VideoBuffer_FB = (byte*)malloc(fb.xres * fb.yres * (fb.bits_per_pixel/8));     // For a single write() syscall to fbdev
@@ -406,15 +457,17 @@ void I_UpdateNoBlit (void)
 
 void I_FinishUpdate (void)
 {
+#ifdef USE_VECTOR
+    draw_screen_vector((unsigned char *) I_VideoBuffer, (unsigned char *) I_VideoBuffer_FB);
+#else
     int y;
-    int x_offset, y_offset, x_offset_end;
+    int x_offset, x_offset_end;
     unsigned char *line_in, *line_out;
 
     /* Offsets in case FB is bigger than DOOM */
     /* 600 = fb heigt, 200 screenheight */
     /* 600 = fb heigt, 200 screenheight */
     /* 2048 =fb width, 320 screenwidth */
-    y_offset     = (((fb.yres - (SCREENHEIGHT * fb_scaling)) * fb.bits_per_pixel/8)) / 2;
     x_offset     = (((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8)) / 2; // XXX: siglent FB hack: /4 instead of /2, since it seems to handle the resolution in a funny way
     //x_offset     = 0;
     x_offset_end = ((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8) - x_offset;
@@ -444,10 +497,7 @@ void I_FinishUpdate (void)
         }
         line_in += SCREENWIDTH;
     }
-
-    /* Start drawing from y-offset */
-    lseek(fd_fb, y_offset * fb.xres, SEEK_SET);
-    write(fd_fb, I_VideoBuffer_FB, (SCREENHEIGHT * fb_scaling * (fb.bits_per_pixel/8)) * fb.xres); /* draw only portion used by doom + x-offsets */
+#endif
 }
 
 //
@@ -468,21 +518,57 @@ void I_ReadScreen (byte* scr)
 
 void I_SetPalette (byte* palette)
 {
-	int i;
-	//col_t* c;
+    //col_t* c;
 
-	//for (i = 0; i < 256; i++)
-	//{
-	//	c = (col_t*)palette;
+    //for (i = 0; i < 256; i++)
+    //{
+    //  c = (col_t*)palette;
 
-	//	rgb565_palette[i] = GFX_RGB565(gammatable[usegamma][c->r],
-	//								   gammatable[usegamma][c->g],
-	//								   gammatable[usegamma][c->b]);
+    //  rgb565_palette[i] = GFX_RGB565(gammatable[usegamma][c->r],
+    //                                 gammatable[usegamma][c->g],
+    //                                 gammatable[usegamma][c->b]);
 
-	//	palette += 3;
-	//}
-    
+    //  palette += 3;
+    //}
 
+#ifdef USE_VECTOR
+    /* Build palette for vector drawing */
+
+    // vuint8m1_t __riscv_vlse8_v_u8m1(const uint8_t *base, ptrdiff_t bstride, size_t vl);
+    vuint8m4_t vri_8m4 = __riscv_vlse8_v_u8m4(palette    , 3, 256);
+    vuint8m4_t vgi_8m4 = __riscv_vlse8_v_u8m4(palette + 1, 3, 256);
+    vuint8m4_t vbi_8m4 = __riscv_vlse8_v_u8m4(palette + 2, 3, 256);
+
+    // vuint8m4_t __riscv_vluxei8_v_u8m4(const uint8_t *base, vuint8m4_t bindex, size_t vl);
+    vuint8m4_t vr_8m4 = __riscv_vluxei8_v_u8m4(gammatable[usegamma], vri_8m4, 256);
+    vuint8m4_t vg_8m4 = __riscv_vluxei8_v_u8m4(gammatable[usegamma], vgi_8m4, 256);
+    vuint8m4_t vb_8m4 = __riscv_vluxei8_v_u8m4(gammatable[usegamma], vbi_8m4, 256);
+
+    // Downscale pixel resolution based on framebuffer pixel format
+    // vuint8m8_t __riscv_vsrl_vx_u8m8(vuint8m8_t op1, size_t shift, size_t vl);
+    vr_8m4 = __riscv_vsrl_vx_u8m4(vr_8m4, 8 - fb.red.length, 256);
+    vg_8m4 = __riscv_vsrl_vx_u8m4(vg_8m4, 8 - fb.green.length, 256);
+    vb_8m4 = __riscv_vsrl_vx_u8m4(vb_8m4, 8 - fb.blue.length, 256);
+
+    // Construct the pixel (16bits) with vt|vg|vb
+    // vuint16m2_t __riscv_vzext_vf2_u16m2(vuint8m1_t op1, size_t vl);
+    vuint16m8_t vr_16m8 = __riscv_vzext_vf2_u16m8(vr_8m4, 256);
+    vuint16m8_t vg_16m8 = __riscv_vzext_vf2_u16m8(vg_8m4, 256);
+    vuint16m8_t vb_16m8 = __riscv_vzext_vf2_u16m8(vb_8m4, 256);
+
+    vr_16m8 = __riscv_vsll_vx_u16m8(vr_16m8, fb.red.offset, 256);
+    vg_16m8 = __riscv_vsll_vx_u16m8(vg_16m8, fb.green.offset, 256);
+    vb_16m8 = __riscv_vsll_vx_u16m8(vb_16m8, fb.blue.offset, 256);
+
+    vuint16m8_t pixel = __riscv_vor_vv_u16m8(vr_16m8, vg_16m8, 256);
+    pixel = __riscv_vor_vv_u16m8(pixel, vb_16m8, 256);
+
+    // Store the precomputed pixels
+    __riscv_vse16_v_u16m8(vpalette, pixel, 256);
+
+#else
+
+    int i;
     /* performance boost:
      * map to the right pixel format over here! */
 
@@ -492,6 +578,7 @@ void I_SetPalette (byte* palette)
         colors[i].g = gammatable[usegamma][*palette++];
         colors[i].b = gammatable[usegamma][*palette++];
     }
+#endif
 
     /* Set new color map in kernel framebuffer driver */
     //XXX FIXME ioctl(fd_fb, IOCTL_FB_PUTCMAP, colors);
@@ -501,15 +588,14 @@ void I_SetPalette (byte* palette)
 
 int I_GetPaletteIndex (int r, int g, int b)
 {
-    int best, best_diff, diff;
-    int i;
+#ifndef USE_VECTOR
+    int i, best, best_diff, diff;
     col_t color;
 
     printf("I_GetPaletteIndex\n");
 
     best = 0;
     best_diff = INT_MAX;
-
     for (i = 0; i < 256; ++i)
     {
     	color.r = GFX_RGB565_R(rgb565_palette[i]);
@@ -531,8 +617,10 @@ int I_GetPaletteIndex (int r, int g, int b)
             break;
         }
     }
-
     return best;
+#else
+    return 0;
+#endif
 }
 
 void I_BeginRead (void)
