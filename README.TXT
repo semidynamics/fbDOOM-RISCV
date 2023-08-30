@@ -1,4 +1,18 @@
 ================
+= fbDOOM-RISCV =
+================
+Use RISC-V Vector instructions to speedup the execution of Doom.
+Optimized routines are:
+  - R_DrawColumn
+  - R_DrawSpan
+General optimizations in different routines in:
+  - i_video_fbdev.c
+
+Vectorization have been thought for a machine with VLEN=512 and DLEN=512.
+For other architectures, you might need to change the vrgather instructions
+with vector load indexed instructions.
+
+================
 = fbDOOM =
 ================
 
