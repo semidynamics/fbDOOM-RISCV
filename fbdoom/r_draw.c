@@ -44,6 +44,10 @@
 // status bar height at bottom of screen
 #define SBARHEIGHT		32
 
+#ifdef USE_VECTOR
+    #include "riscv_vector.h"
+#endif
+
 //
 // All drawing to the view buffer is accomplished in this file.
 // The other refresh files only know about ccordinates,
@@ -132,6 +136,62 @@ void R_DrawColumn (void)
     // Inner loop that does the actual texture mapping,
     //  e.g. a DDA-lile scaling.
     // This is as fast as it gets.
+#ifdef USE_VECTOR
+    if (count > 20) {
+
+        count++;
+
+        vuint8m2_t source   =  __riscv_vle8_v_u8m2(dc_source, 128);
+
+        vuint8m4_t colormap =  __riscv_vle8_v_u8m4(dc_colormap, 256);
+
+        do
+        {
+            size_t vl = __riscv_vsetvl_e32m8(count);
+
+            vuint32m8_t indexes =  __riscv_vid_v_u32m8(vl);
+
+            vuint32m8_t offsets =  __riscv_vmul_vx_u32m8(indexes, fracstep, vl);
+
+            vuint32m8_t frac_v =  __riscv_vmv_v_x_u32m8(frac, vl);
+
+            vuint32m8_t offset_add = __riscv_vadd_vv_u32m8(offsets, frac_v, vl);
+
+            vuint16m4_t offset_shift = __riscv_vnsrl_wx_u16m4(offset_add, FRACBITS, vl);
+
+            vuint8m2_t offsets_shift_8 = __riscv_vnsrl_wx_u8m2(offset_shift, 0, vl);
+
+            vuint8m2_t source_index = __riscv_vand_vx_u8m2(offsets_shift_8, 127, vl);
+
+            vuint8m2_t color_index =  __riscv_vrgather_vv_u8m2(source, source_index, vl);
+
+            vuint8m4_t color_index_4 = __riscv_vlmul_ext_v_u8m2_u8m4 (color_index);
+
+            vuint8m4_t color =  __riscv_vrgather_vv_u8m4(colormap, color_index_4, vl);
+
+            __riscv_vsse8_v_u8m4(dest, SCREENWIDTH, color, vl);
+
+            dest += vl * SCREENWIDTH;
+            frac += vl * fracstep;
+
+            count -= vl;
+
+        } while (count);
+
+    }
+    else {
+        do
+        {
+        // Re-map color indices from wall texture column
+        //  using a lighting/special effects LUT.
+        *dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
+
+        dest += SCREENWIDTH;
+        frac += fracstep;
+
+        } while (count--);
+    }
+#else
     do 
     {
 	// Re-map color indices from wall texture column
@@ -142,6 +202,7 @@ void R_DrawColumn (void)
 	frac += fracstep;
 	
     } while (count--); 
+#endif
 } 
 
 
